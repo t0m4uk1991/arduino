@@ -12,6 +12,8 @@
 #define MQ_5_AOUT_PIN 1
 #define MQ_5_DOUT_PIN 5
 
+#define CRITICAL_LEVEL_OF_CO_IN_PPM 1000
+
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
 DeviceAddress insideThermometer;
@@ -24,13 +26,18 @@ EthernetClient ethClient;
 PubSubClient client(ethClient);
 
 unsigned long time;
-char message_buff[255];
+
+float temperatureInCel = 0;
+int coLevelInPpm = 0;
+int naturalGasLevelInPpm = 0;
 
 void reconnect() {
   Serial.println("try connect");
   while (!client.connected()) {
     Serial.print("Attempting MQTT connection...");
     if (client.connect("arduinoClient")) {
+      client.setCallback(callback);
+      client.subscribe("commands");
       Serial.println("connected");
     } else {
       Serial.print("failed, rc=");
@@ -46,9 +53,6 @@ void setup()
   Serial.begin(9600);
   client.setServer(server, 1883);
   Ethernet.begin(mac, ip);
-  Serial.println("Network initialized");
-
-  Serial.print("Locating devices...");
   sensors.begin();
   Serial.print("Found ");
   Serial.print(sensors.getDeviceCount(), DEC);
@@ -64,58 +68,80 @@ void setup()
 
 void loop()
 {
-  /*if (!client.connected()) {
+  if (!client.connected()) {
     delay(1000);
     reconnect();
-    }*/
+  }
   if (millis() > (time + 5000)) {
     time = millis();
-    float temperature = getTemperature();
-    String pubString = "{\"sensorType\": \"temperature\", \"sensorDataValue\":"  + String(temperature) + ",\"unit\":\"celsium\"}";
-    //pubString.toCharArray(message_buff, pubString.length()+1);
-    Serial.println(pubString);
-    //client.publish("/sensors", message_buff);
 
-    if (abs(temperature - 20.0) > 2.0){
-      //beep(50);
-      //beep(200);
-      //beep(50); 
+    float temperature = 0;
+    String sensorTemperatureDataJson = "";
+    if (abs((temperature = getTemperature()) - temperatureInCel) > 0.01){
+      temperatureInCel = temperature;
+      sensorTemperatureDataJson = "{\"sensorType\": \"temperature\", \"sensorDataValue\":"  + String(temperatureInCel) + ",\"unit\":\"celsium\"}";
+      publishMessageToMQTTBrocker(sensorTemperatureDataJson);
+      Serial.println(sensorTemperatureDataJson);
     }
 
-    //mq-7
-    int mq7_limit;
-    int mq7_value;
-    mq7_value= analogRead(MQ_7_AOUT_PIN);
-    mq7_limit= digitalRead(MQ_7_DOUT_PIN);
-    Serial.print("CO value: ");
-    Serial.println(mq7_value);
-    Serial.print("Limit: ");
-    Serial.print(mq7_limit);
+    int co = 0;
+    String sensorCODataJson = "";
+    if ((co = getCOLevel()) != coLevelInPpm){
+      coLevelInPpm = co;
+      checkCOLevel(coLevelInPpm);
+      sensorCODataJson = "{\"sensorType\": \"co\", \"sensorDataValue\":"  + String(coLevelInPpm) + ",\"unit\":\"ppm\"}";
+      publishMessageToMQTTBrocker(sensorCODataJson);
+      Serial.println(sensorCODataJson);
+    }
 
-    //mq-5
-    int mq5_limit;
-    int mq5_value;
-    mq5_value= analogRead(MQ_5_AOUT_PIN);
-    mq5_limit= digitalRead(MQ_5_DOUT_PIN);
-    Serial.print("propane value: ");
-    Serial.println(mq5_value);
-    Serial.print("Limit: ");
-    Serial.print(mq5_limit);
-
+    int naturalGas = 0;
+    String sensorNaturalGasDataJson = "";
+    if ((naturalGas = getNaturalGasConcentrationLevel()) != naturalGasLevelInPpm){
+      naturalGasLevelInPpm = naturalGas;
+      sensorNaturalGasDataJson = "{\"sensorType\": \"gas\", \"sensorDataValue\":"  + String(naturalGasLevelInPpm) + ",\"unit\":\"ppm\"}";
+      publishMessageToMQTTBrocker(sensorNaturalGasDataJson);
+      Serial.println(sensorNaturalGasDataJson);
+    }
   }
-  //Serial.println("online");
-  //client.loop();
+
+  client.loop();
+}
+
+void publishMessageToMQTTBrocker(String dataToBrocker) {
+  char message_buff[255];
+  dataToBrocker.toCharArray(message_buff, dataToBrocker.length()+1);
+  client.publish("/sensors", message_buff);
+}
+
+void callback(char* topic, byte* payload, unsigned int length) {
+  //TBD
+}
+
+String buildSensorDataJsonMessage(String temperature, String co, String naturalGas){
+      return "[" + String(temperature) + "," + String(co) + "," + String(naturalGas) + "]";
+}
+
+void checkCOLevel(float coLevelInPpm) {
+  if (coLevelInPpm > CRITICAL_LEVEL_OF_CO_IN_PPM){
+      beep(50);
+      beep(200);
+      beep(50); 
+    }
+}
+
+int getCOLevel(){
+    int mq7_value = analogRead(MQ_7_AOUT_PIN);
+    return mq7_value;
+}
+
+int getNaturalGasConcentrationLevel(){
+  int mq5_value= analogRead(MQ_5_AOUT_PIN);
+  return mq5_value;
 }
 
 float getTemperature() {
-  Serial.print("Requesting temperatures...");
   sensors.requestTemperatures();
-  Serial.println("DONE");
   float tempC = sensors.getTempC(insideThermometer);
-  Serial.print("Temp C: ");
-  Serial.print(tempC);
-  Serial.print(" Temp F: ");
-  Serial.println(DallasTemperature::toFahrenheit(tempC));
   return tempC;
 }
 
